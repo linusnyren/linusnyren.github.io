@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>🕹️ Dachshund Snake · LIVE</title>
+<meta name="description" content="Real-time multiplayer snake where the whole internet steers one sausage dog. By Linus Nyrén."/>
+<meta name="theme-color" content="#05010f"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐶</text></svg>"/>
+<style>
+  :root{--cyan:#00f0ff;--pink:#ff2bd6;--yellow:#ffe259;--hot:#ff2a6d;--ink:#05010f;--panel:#12052a;--line:#3d1d66;--txt:#e6f7ff;--mute:#a58fd0}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);color:var(--txt);font:600 14px/1.4 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;overflow-x:hidden}
+  body{min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px 12px 40px}
+  /* synthwave backdrop */
+  .sky{position:fixed;inset:0;z-index:-2;background:linear-gradient(#05010f 0%,#1a0638 45%,#3a0b5c 62%,#ff2a6d 100%)}
+  .sun{position:fixed;left:50%;bottom:30vh;width:min(60vw,520px);aspect-ratio:1;transform:translate(-50%,50%);z-index:-2;border-radius:50%;
+    background:linear-gradient(#ffe259,#ff7a3d 55%,#ff1f8e);filter:drop-shadow(0 0 60px #ff2a6d);
+    -webkit-mask:repeating-linear-gradient(to bottom,#000 0 14px,transparent 14px 20px) bottom/100% 55% no-repeat,linear-gradient(#000,#000) top/100% 46% no-repeat;
+            mask:repeating-linear-gradient(to bottom,#000 0 14px,transparent 14px 20px) bottom/100% 55% no-repeat,linear-gradient(#000,#000) top/100% 46% no-repeat}
+  .floor{position:fixed;left:-50%;right:-50%;bottom:0;height:30vh;z-index:-1;background:
+    linear-gradient(to bottom,#1b0433 0%,transparent 30%),
+    repeating-linear-gradient(90deg,rgba(255,43,214,.55) 0 2px,transparent 2px 70px),
+    repeating-linear-gradient(0deg,rgba(255,43,214,.55) 0 2px,transparent 2px 50px),#0b0220;
+    transform:perspective(300px) rotateX(55deg);transform-origin:top;animation:floor 1.2s linear infinite}
+  @keyframes floor{to{background-position:0 0,0 0,0 50px,0 0}}
+  .scan{pointer-events:none;position:fixed;inset:0;z-index:50;background:repeating-linear-gradient(transparent 0 2px,rgba(0,0,0,.18) 2px 4px)}
+
+  header{text-align:center}
+  h1{font:900 clamp(30px,6vw,64px)/1 Impact,'Arial Black',sans-serif;letter-spacing:3px;
+    background:linear-gradient(#e0f7ff 0%,#7ad7ff 45%,#2b1055 50%,#ff6ad5 56%,#fff0fb 100%);-webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 0 10px rgba(255,43,214,.6)) drop-shadow(3px 3px 0 #2b0a4a);animation:flick 6s infinite}
+  @keyframes flick{0%,40%,44%,100%{opacity:1}42%{opacity:.55}}
+  .tag{color:var(--pink);letter-spacing:3px;font-size:12px;margin-top:6px}
+  .tag b{color:var(--cyan)}
+  .live{display:inline-flex;align-items:center;gap:6px;color:var(--hot)}
+  .live i{width:9px;height:9px;border-radius:50%;background:var(--hot);box-shadow:0 0 10px var(--hot);animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.25}}
+
+  main{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;width:min(1180px,100%);align-items:start}
+  @media (max-width:900px){main{grid-template-columns:1fr}}
+  .cab{position:relative;padding:12px;border-radius:16px;background:var(--panel);
+    box-shadow:0 0 0 3px transparent,0 0 30px rgba(255,43,214,.35),inset 0 0 40px rgba(0,0,0,.6);border:3px solid transparent;
+    background:linear-gradient(var(--panel),var(--panel)) padding-box,linear-gradient(120deg,var(--cyan),var(--pink),var(--yellow)) border-box}
+  .hud{display:flex;justify-content:space-between;gap:8px;padding:2px 6px 10px;letter-spacing:2px;color:var(--mute);flex-wrap:wrap}
+  .hud b{color:var(--yellow);font-size:16px}
+  .stage{position:relative}
+  canvas{display:block;width:100%;height:auto;border-radius:8px;touch-action:none;background:#0b0418;outline:none}
+  .shake{animation:shake .45s}
+  @keyframes shake{20%{transform:translate(-8px,4px)}40%{transform:translate(7px,-5px)}60%{transform:translate(-5px,-2px)}80%{transform:translate(4px,3px)}}
+  .emotes{position:absolute;inset:0;pointer-events:none;overflow:hidden;border-radius:8px}
+  .emote{position:absolute;bottom:4%;font-size:34px;animation:rise 2.6s ease-out forwards;filter:drop-shadow(0 0 6px #000)}
+  .emote small{display:block;font-size:10px;color:#fff;text-align:center;letter-spacing:1px}
+  @keyframes rise{0%{transform:translateY(0) scale(.4);opacity:0}15%{transform:translateY(-30px) scale(1.15);opacity:1}100%{transform:translateY(-320px) scale(1);opacity:0}}
+  .banner{position:absolute;left:50%;top:10px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:rgba(5,1,15,.8);
+    border:1px solid var(--cyan);color:var(--cyan);font-size:12px;letter-spacing:2px;white-space:nowrap;transition:opacity .4s}
+  .controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
+  .pad{display:grid;grid-template-columns:repeat(3,58px);grid-template-rows:repeat(2,50px);gap:6px}
+  .pad button[data-dir=up]{grid-column:2}
+  .pad button[data-dir=left]{grid-column:1;grid-row:2}
+  .pad button[data-dir=down]{grid-column:2;grid-row:2}
+  .pad button[data-dir=right]{grid-column:3;grid-row:2}
+  button{font:inherit;color:var(--txt);background:#1d0b36;border:2px solid var(--cyan);border-radius:10px;cursor:pointer;
+    box-shadow:0 4px 0 #05010f,0 0 12px rgba(0,240,255,.35);transition:transform .06s,box-shadow .06s}
+  button:active,button.hit{transform:translateY(3px);box-shadow:0 1px 0 #05010f,0 0 22px var(--cyan)}
+  .pad button{font-size:22px;color:var(--pink)}
+  .emo{display:flex;gap:6px;flex-wrap:wrap}
+  .emo button{width:46px;height:46px;font-size:22px;border-color:var(--pink);box-shadow:0 4px 0 #05010f,0 0 12px rgba(255,43,214,.35)}
+  .small{padding:8px 12px;font-size:12px;letter-spacing:1px}
+  .keys{color:var(--mute);font-size:11px;letter-spacing:1px;text-align:right}
+  .keys kbd{border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--txt)}
+
+  aside{display:flex;flex-direction:column;gap:14px}
+  .panel{padding:12px 14px;border-radius:12px;background:rgba(18,5,42,.88);border:2px solid var(--line)}
+  .panel h2{font-size:12px;letter-spacing:3px;color:var(--cyan);margin-bottom:8px}
+  .panel ol,.panel ul{list-style:none;display:flex;flex-direction:column;gap:4px;max-height:240px;overflow:auto}
+  .panel li{display:flex;justify-content:space-between;gap:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .panel li span:first-child{overflow:hidden;text-overflow:ellipsis}
+  .me{color:var(--yellow)}
+  .dim{color:var(--mute)}
+  .feed li{animation:slide .3s ease-out}
+  @keyframes slide{from{transform:translateX(20px);opacity:0}}
+  .status{font-size:11px;color:var(--mute);letter-spacing:1px}
+  .status.ok{color:#5dff9e}.status.bad{color:var(--hot)}
+  footer{color:var(--mute);font-size:11px;letter-spacing:2px;text-align:center}
+  footer a{color:var(--pink)}
+  .gold{animation:gold 1.2s linear infinite}
+  @keyframes gold{to{filter:hue-rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="sky"></div><div class="sun"></div><div class="floor"></div><div class="scan"></div>
+
+<header>
+  <h1>DACHSHUND SNAKE</h1>
+  <p class="tag"><span class="live"><i></i>LIVE</span> · ONE SAUSAGE DOG · <b id="online">0</b> <span id="humans">HUMANS</span> STEERING · REAL-TIME</p>
+</header>
+
+<main>
+  <section class="cab">
+    <div class="hud">
+      <span>GAME <b id="game">#–</b></span>
+      <span>SCORE <b id="score">000</b> 🦴</span>
+      <span>HI <b id="hi">000</b></span>
+      <span>SPEED <b id="speed">1.0x</b></span>
+    </div>
+    <div class="stage" id="stage">
+      <canvas id="c" width="960" height="640" tabindex="0" aria-label="Game board. Use arrow keys or WASD to steer."></canvas>
+      <div class="emotes" id="emotes"></div>
+      <div class="banner" id="banner">CONNECTING TO THE GRID…</div>
+    </div>
+    <div class="controls">
+      <div class="pad" aria-label="Direction pad">
+        <button data-dir="up" aria-label="up">▲</button>
+        <button data-dir="left" aria-label="left">◀</button>
+        <button data-dir="down" aria-label="down">▼</button>
+        <button data-dir="right" aria-label="right">▶</button>
+      </div>
+      <div class="emo" aria-label="Emotes">
+        <button data-emote="🐶" title="1">🐶</button><button data-emote="🦴" title="2">🦴</button>
+        <button data-emote="🔥" title="3">🔥</button><button data-emote="💀" title="4">💀</button><button data-emote="😂" title="5">😂</button>
+      </div>
+      <div>
+        <button class="small" id="nameBtn">✏️ NAME</button>
+        <button class="small" id="soundBtn">🔇 SOUND</button>
+        <p class="keys" style="margin-top:6px"><kbd>←↑↓→</kbd>/<kbd>WASD</kbd> steer · <kbd>1-5</kbd> emote · swipe on mobile</p>
+      </div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="panel"><h2>🎮 PLAYERS ONLINE</h2><ul id="players"><li class="dim">scanning…</li></ul><p class="status" id="status">● offline</p></div>
+    <div class="panel"><h2>🏅 HALL OF FAME</h2><ol id="fame"><li class="dim">no legends yet</li></ol></div>
+    <div class="panel"><h2>📡 LIVE FEED</h2><ul class="feed" id="feed"><li class="dim">waiting for input…</li></ul></div>
+  </aside>
+</main>
+
+<footer>MADE BY <a href="https://github.com/linusnyren">@LINUSNYREN</a> · STATE SYNCED OVER WEBSOCKETS (MQTT) · <a href="/">← BACK TO MOOD</a></footer>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>
