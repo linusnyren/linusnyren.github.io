@@ -1,62 +1,107 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, steer, tick, sanitize, electHost, addToFame, autopilot, COLS } from './engine.js';
+import { newWorld, addDog, removeDog, steer, tick, sanitize, wire, electHost, addToFame, COATS, RESPAWN_TICKS } from './engine.js';
 
-const fixed = () => 0;
+const seeded = (seed = 7) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+const place = (dog, snake, dir) => Object.assign(dog, { snake, dir, auto: false, alive: true });
 
-test('queues quick turns but rejects reversals and repeats', () => {
-  const s = newGame(null, fixed);
-  assert.equal(steer(s, 'left', 'a'), false);
-  assert.equal(steer(s, 'right', 'a'), false);
-  assert.ok(steer(s, 'up', 'a'));
-  assert.ok(steer(s, 'left', 'b'));
-  assert.equal(steer(s, 'right', 'c'), false);
+test('every dog gets its own coat', () => {
+  const s = newWorld(seeded());
+  const ids = Array.from({ length: COATS.length }, (_, i) => `p${i}`);
+  ids.forEach((id) => addDog(s, { id, name: id }, seeded()));
+  assert.equal(new Set(s.dogs.map((d) => d.c)).size, COATS.length);
+  removeDog(s, 'p3');
+  assert.equal(addDog(s, { id: 'new', name: 'new' }).c, 3);
+});
+
+test('steering only affects your own dog and rejects reversals', () => {
+  const s = newWorld();
+  const a = place(addDog(s, { id: 'a', name: 'A' }), [[5, 5], [4, 5], [3, 5]], 'right');
+  const b = place(addDog(s, { id: 'b', name: 'B' }), [[5, 15], [4, 15], [3, 15]], 'right');
+  s.food = [];
+  assert.equal(steer(s, 'a', 'left'), false);
+  assert.ok(steer(s, 'a', 'up'));
+  assert.ok(steer(s, 'a', 'left'));
   tick(s); tick(s);
-  assert.equal(s.dir, 'left');
-  assert.deepEqual(s.crew, ['a', 'b']);
+  assert.equal(a.dir, 'left');
+  assert.equal(b.dir, 'right');
 });
 
-test('eating grows the dog and scores', () => {
-  const s = newGame(null, fixed);
-  const [hx, hy] = s.snake[0];
-  s.food = [hx + 1, hy];
-  assert.equal(tick(s), 'eat');
-  assert.equal(s.score, 1);
-  assert.equal(s.snake.length, 4);
+test('eating grows the dog that ate', () => {
+  const s = newWorld();
+  const a = place(addDog(s, { id: 'a', name: 'A' }), [[5, 5], [4, 5], [3, 5]], 'right');
+  s.food = [[6, 5]];
+  const ev = tick(s);
+  assert.ok(ev.some((e) => e.t === 'eat' && e.id === 'a'));
+  assert.equal(a.score, 1);
+  assert.equal(a.snake.length, 4);
 });
 
-test('wall and self collisions end the game, blaming the last steerer', () => {
-  const s = newGame(null, fixed);
-  s.food = [0, 0];
-  let ev;
-  for (let i = 0; i < COLS && ev !== 'die'; i++) ev = tick(s);
-  assert.equal(ev, 'die');
-  assert.equal(s.death.cause, 'wall');
-
-  const t = newGame(null, fixed);
-  t.snake = [[5, 5], [4, 5], [4, 6], [5, 6], [6, 6], [6, 5]];
-  t.food = [0, 0];
-  steer(t, 'down', 'oops');
-  assert.equal(tick(t), 'die');
-  assert.deepEqual(t.death, { cause: 'self', by: 'oops' });
+test('running into another dog kills you, credits them, and drops bones', () => {
+  const s = newWorld();
+  const a = place(addDog(s, { id: 'a', name: 'A' }), [[5, 5], [4, 5], [3, 5], [2, 5]], 'right');
+  const b = place(addDog(s, { id: 'b', name: 'B' }), [[4, 7], [4, 8], [4, 9]], 'up');
+  s.food = [];
+  b.queue = [];
+  steer(s, 'b', 'up');
+  tick(s); // b head -> [4,6]
+  const ev = tick(s); // b head -> [4,5], which is a's body
+  assert.equal(b.alive, false);
+  assert.equal(a.alive, true);
+  assert.deepEqual(b.death, { cause: 'dog', by: 'A' });
+  assert.ok(ev.some((e) => e.t === 'die' && e.id === 'b'));
+  assert.ok(s.food.length >= 2);
 });
 
-test('chasing your own tail is legal', () => {
-  const s = newGame(null, fixed);
-  s.snake = [[5, 5], [5, 6], [4, 6], [4, 5]];
-  s.dir = 'up';
-  s.food = [0, 0];
-  steer(s, 'left');
-  assert.equal(tick(s), 'move');
+test('head-on collisions take out both dogs, then they respawn', () => {
+  const s = newWorld();
+  const a = place(addDog(s, { id: 'a', name: 'A' }), [[5, 5], [4, 5], [3, 5]], 'right');
+  const b = place(addDog(s, { id: 'b', name: 'B' }), [[7, 5], [8, 5], [9, 5]], 'left');
+  s.food = [];
+  tick(s);
+  assert.equal(a.alive || b.alive, false);
+  assert.equal(a.death.cause, 'headbutt');
+  for (let i = 0; i < RESPAWN_TICKS; i++) tick(s);
+  assert.ok(a.alive && b.alive);
+  assert.equal(a.score, 0);
 });
 
-test('sanitize rejects junk and strips unknown fields', () => {
+test('chasing your own tail is legal; walls are not', () => {
+  const s = newWorld();
+  const a = place(addDog(s, { id: 'a', name: 'A' }), [[5, 5], [5, 6], [4, 6], [4, 5]], 'up');
+  s.food = [];
+  steer(s, 'a', 'left');
+  tick(s);
+  assert.equal(a.alive, true);
+  place(a, [[0, 0], [1, 0]], 'left');
+  tick(s);
+  assert.equal(a.death.cause, 'wall');
+});
+
+test('autopilot pack survives for a long time', () => {
+  const rnd = seeded(3);
+  const s = newWorld(rnd);
+  ['a', 'b', 'c'].forEach((id) => addDog(s, { id, name: id }, rnd));
+  let deaths = 0, eats = 0;
+  for (let i = 0; i < 600; i++) for (const e of tick(s, rnd)) { if (e.t === 'die') deaths++; if (e.t === 'eat') eats++; }
+  assert.ok(eats >= 40, `eats ${eats}`);
+  assert.ok(deaths <= 6, `deaths ${deaths}`);
+});
+
+test('sanitize round-trips wire state and rejects junk', () => {
+  const s = newWorld();
+  addDog(s, { id: 'a', name: 'A' });
+  tick(s);
+  const out = sanitize(JSON.parse(JSON.stringify(wire(s))));
+  assert.equal(out.dogs[0].id, 'a');
+  assert.deepEqual(out.dogs[0].queue, []);
   assert.equal(sanitize(null), null);
-  assert.equal(sanitize({ snake: 'x' }), null);
-  assert.equal(sanitize({ snake: [[1, 1], [999, 1]], dir: 'up', status: 'playing' }), null);
-  const s = sanitize({ snake: [[1, 1], [0, 1]], dir: 'right', status: 'playing', evil: '<script>', crew: ['a'.repeat(99), 5] });
-  assert.equal(s.evil, undefined);
-  assert.deepEqual(s.crew, ['a'.repeat(20)]);
+  assert.equal(sanitize({ dogs: 'x', food: [] }), null);
+  assert.equal(sanitize({ dogs: [{ id: 'a', dir: 'up', snake: [[999, 1], [1, 1]], alive: true }], food: [] }), null);
+  const evil = sanitize({ dogs: [{ id: 'a', dir: 'up', snake: [[1, 1], [1, 2]], alive: true, name: '<img onerror=x>', c: 99, hax: 1 }], food: [] });
+  assert.equal(evil.dogs[0].name.includes('<'), false);
+  assert.equal(evil.dogs[0].c, 0);
+  assert.equal(evil.dogs[0].hax, undefined);
 });
 
 test('host election prefers oldest active peer and ignores stale ones', () => {
@@ -71,25 +116,8 @@ test('host election prefers oldest active peer and ignores stale ones', () => {
   assert.equal(electHost(peers, now), 'old');
 });
 
-test('hall of fame keeps the top scores', () => {
+test('hall of fame keeps one best score per player', () => {
   let f = [];
-  for (const score of [3, 9, 0, 5]) f = addToFame(f, { score, crew: [], at: score }, 2);
-  assert.deepEqual(f.map((e) => e.score), [9, 5]);
-});
-
-test('autopilot survives and eats until a human grabs the leash', () => {
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const s = newGame(null, rnd);
-  for (let i = 0; i < 400 && s.status === 'playing'; i++) {
-    const d = autopilot(s);
-    if (d !== s.dir) steer(s, d, null);
-    tick(s, rnd);
-  }
-  assert.equal(s.status, 'playing');
-  assert.ok(s.score >= 10, `score ${s.score}`);
-  assert.equal(s.auto, true);
-  steer(s, s.dir === 'up' || s.dir === 'down' ? 'left' : 'up', 'human');
-  tick(s, rnd);
-  assert.equal(s.auto, false);
+  for (const [name, score] of [['a', 3], ['b', 9], ['a', 5], ['c', 0], ['a', 4]]) f = addToFame(f, { name, score, at: score }, 5);
+  assert.deepEqual(f.map((e) => `${e.name}${e.score}`), ['b9', 'a5']);
 });

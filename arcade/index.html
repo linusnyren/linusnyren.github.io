@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <title>🕹️ Dachshund Snake · LIVE</title>
-<meta name="description" content="Real-time multiplayer snake where the whole internet steers one sausage dog. By Linus Nyrén."/>
+<meta name="description" content="Real-time multiplayer snake: every player gets their own colourful sausage dog. By Linus Nyrén."/>
 <meta name="theme-color" content="#05010f"/>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐶</text></svg>"/>
 <style>
@@ -52,7 +52,7 @@
   .emote{position:absolute;bottom:4%;font-size:34px;animation:rise 2.6s ease-out forwards;filter:drop-shadow(0 0 6px #000)}
   .emote small{display:block;font-size:10px;color:#fff;text-align:center;letter-spacing:1px}
   @keyframes rise{0%{transform:translateY(0) scale(.4);opacity:0}15%{transform:translateY(-30px) scale(1.15);opacity:1}100%{transform:translateY(-320px) scale(1);opacity:0}}
-  .banner{position:absolute;left:50%;top:10px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:rgba(5,1,15,.8);
+  .banner{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:rgba(5,1,15,.8);
     border:1px solid var(--cyan);color:var(--cyan);font-size:12px;letter-spacing:2px;white-space:nowrap;transition:opacity .4s}
   .controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
   .pad{display:grid;grid-template-columns:repeat(3,58px);grid-template-rows:repeat(2,50px);gap:6px}
@@ -77,6 +77,7 @@
   .panel li{display:flex;justify-content:space-between;gap:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .panel li span:first-child{overflow:hidden;text-overflow:ellipsis}
   .me{color:var(--yellow)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:2px;vertical-align:-1px}
   .dim{color:var(--mute)}
   .feed li{animation:slide .3s ease-out}
   @keyframes slide{from{transform:translateX(20px);opacity:0}}
@@ -93,16 +94,16 @@
 
 <header>
   <h1>DACHSHUND SNAKE</h1>
-  <p class="tag"><span class="live"><i></i>LIVE</span> · ONE SAUSAGE DOG · <b id="online">0</b> <span id="humans">HUMANS</span> STEERING · REAL-TIME</p>
+  <p class="tag"><span class="live"><i></i>LIVE</span> · <b id="online">0</b> <span id="dogsWord">DOGS</span> IN THE PACK · EVERY PLAYER GETS A DOG · REAL-TIME</p>
 </header>
 
 <main>
   <section class="cab">
     <div class="hud">
-      <span>GAME <b id="game">#–</b></span>
+      <span>PACK <b id="pack">0</b> 🐕</span>
       <span>SCORE <b id="score">000</b> 🦴</span>
       <span>HI <b id="hi">000</b></span>
-      <span>SPEED <b id="speed">1.0x</b></span>
+      <span>RANK <b id="rank">–</b></span>
     </div>
     <div class="stage" id="stage">
       <canvas id="c" width="960" height="640" tabindex="0" aria-label="Game board. Use arrow keys or WASD to steer."></canvas>
@@ -129,9 +130,9 @@
   </section>
 
   <aside>
-    <div class="panel"><h2>🎮 PLAYERS ONLINE</h2><ul id="players"><li class="dim">scanning…</li></ul><p class="status" id="status">● offline</p></div>
+    <div class="panel"><h2>🐕 THE PACK</h2><ul id="players"><li class="dim">scanning…</li></ul><p class="status" id="status">● offline</p></div>
     <div class="panel"><h2>🏅 HALL OF FAME</h2><ol id="fame"><li class="dim">no legends yet</li></ol></div>
-    <div class="panel"><h2>📡 LIVE FEED</h2><ul class="feed" id="feed"><li class="dim">waiting for input…</li></ul></div>
+    <div class="panel"><h2>📡 LIVE FEED</h2><ul class="feed" id="feed"><li class="dim">waiting for action…</li></ul></div>
   </aside>
 </main>
 

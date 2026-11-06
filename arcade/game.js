@@ -1,13 +1,13 @@
 import mqtt from './vendor/mqtt.esm.js';
-import { COLS, ROWS, OPP, newGame, steer, tick, tickMs, sanitize, electHost, addToFame, autopilot } from './engine.js';
+import { COLS, ROWS, OPP, COATS, BOT_ID, TICK_MS, RESPAWN_TICKS, newWorld, addDog, removeDog, steer, tick, sanitize, wire, electHost, addToFame } from './engine.js';
 
 // ---------- config ----------
 const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-const P = 'linusnyren/dachshund-snake/v1';
+const P = 'linusnyren/dachshund-snake/v2';
 const T = { presence: `${P}/presence`, bye: `${P}/bye`, state: `${P}/state`, input: `${P}/input`, emote: `${P}/emote`, fame: `${P}/fame` };
-const HEARTBEAT_MS = 2000, SETTLE_MS = 2500, RESTART_MS = 3500;
+const HEARTBEAT_MS = 2000, SETTLE_MS = 2500;
 const EMOTES = ['🐶', '🦴', '🔥', '💀', '😂'];
-const CELL = 40;
+const CELL = 32, S = CELL / 40;
 
 // ---------- identity ----------
 const ADJ = ['Turbo', 'Sir', 'Captain', 'Neon', 'Lil', 'Mega', 'Sneaky', 'Hyper', 'Cosmic', 'Wiggly', 'Pixel', 'Retro'];
@@ -24,16 +24,24 @@ localStorage.setItem('dsnake-name', me.name);
 // ---------- dom ----------
 const $ = (id) => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d');
-const ui = { game: $('game'), score: $('score'), hi: $('hi'), speed: $('speed'), online: $('online'), players: $('players'), fame: $('fame'), feed: $('feed'), banner: $('banner'), status: $('status'), stage: $('stage'), emotes: $('emotes') };
-const li = (text, cls) => { const el = document.createElement('li'); if (cls) el.className = cls; if (Array.isArray(text)) text.forEach((t) => { const s = document.createElement('span'); s.textContent = t; el.append(s); }); else el.textContent = text; return el; };
+const ui = { pack: $('pack'), score: $('score'), hi: $('hi'), rank: $('rank'), online: $('online'), players: $('players'), fame: $('fame'), feed: $('feed'), banner: $('banner'), status: $('status'), stage: $('stage'), emotes: $('emotes') };
+const li = (text, cls) => { const el = document.createElement('li'); if (cls) el.className = cls; el.textContent = text; return el; };
+const swatchRow = (coat, text, right, cls) => {
+  const el = document.createElement('li'); if (cls) el.className = cls;
+  const l = document.createElement('span'), dot = document.createElement('i'), r = document.createElement('span');
+  dot.className = 'dot'; dot.style.background = coat; dot.style.boxShadow = `0 0 8px ${coat}`;
+  l.append(dot, text); r.textContent = right; el.append(l, r);
+  return el;
+};
 
 // ---------- shared state ----------
 const peers = new Map();
 let client, connected = false, settled = false, hostId = null, amHost = false;
 let state = null, view = null, fame = [], hiLocal = 0;
-let hostTimer = null, restartTimer = null;
+let hostTimer = null;
 let golden = localStorage.getItem('dsnake-golden') === '1';
 const lastInput = new Map();
+const myDog = () => view?.cur.dogs.find((d) => d.id === me.id);
 
 // ---------- network ----------
 function publish(topic, obj, opts = {}) {
@@ -71,7 +79,7 @@ function onMessage(topic, buf) {
   const now = Date.now();
 
   if (topic.startsWith(`${T.presence}/`)) {
-    if (typeof msg.id !== 'string' || msg.id.length > 12 || !Number.isFinite(msg.joined)) return;
+    if (typeof msg.id !== 'string' || msg.id.length > 12 || msg.id === BOT_ID || !Number.isFinite(msg.joined)) return;
     peers.set(msg.id, { id: msg.id, name: cleanName(msg.name) || '???', joined: msg.joined, active: !!msg.active, golden: !!msg.golden, seen: now });
     return;
   }
@@ -85,32 +93,27 @@ function onMessage(topic, buf) {
     }
     if (amHost) return;
     if (hostId && msg.from && msg.from !== hostId && peers.has(hostId)) return;
-    const s = sanitize(msg);
-    if (!s) return;
-    receive(s, msg.ev, cleanName(msg.evBy));
+    receive(sanitize(msg));
     return;
   }
 
   if (topic === T.input) {
-    const name = cleanName(msg.name) || '???';
-    if (!OPP[msg.dir] || typeof msg.id !== 'string') return;
-    // crude per-player flood limit
-    const t = lastInput.get(msg.id) || 0;
-    if (now - t < 60) return;
+    if (!OPP[msg.dir] || typeof msg.id !== 'string' || msg.id === BOT_ID) return;
+    const t = lastInput.get(msg.id) || 0; // crude per-player flood limit
+    if (now - t < 40) return;
     lastInput.set(msg.id, now);
-    feed(`${ARROWS[msg.dir]} ${name}`, msg.id === me.id);
-    if (amHost && msg.id !== me.id) steer(state, msg.dir, name);
+    if (amHost && msg.id !== me.id) steer(state, msg.id, msg.dir);
     return;
   }
 
   if (topic === T.emote) {
     if (!EMOTES.includes(msg.e)) return;
-    floatEmote(msg.e, cleanName(msg.name));
+    floatEmote(msg.e, cleanName(msg.name), typeof msg.id === 'string' ? msg.id : null);
     return;
   }
 
   if (topic === T.fame && Array.isArray(msg.list)) {
-    fame = msg.list.slice(0, 10).map((e) => ({ score: Number.isInteger(e?.score) ? e.score : 0, crew: Array.isArray(e?.crew) ? e.crew.map(cleanName).filter(Boolean).slice(0, 6) : [], at: Number(e?.at) || 0 })).filter((e) => e.score > 0);
+    fame = msg.list.slice(0, 10).map((e) => ({ name: cleanName(e?.name), c: Number.isInteger(e?.c) && COATS[e.c] ? e.c : 0, score: Number.isInteger(e?.score) ? e.score : 0, at: Number(e?.at) || 0 })).filter((e) => e.score > 0 && e.name);
     renderFame();
   }
 }
@@ -128,58 +131,58 @@ function elect() {
 
 function becomeHost() {
   amHost = true;
-  state = state ? sanitize(state) : null;
-  if (!state || (state.status === 'over' && Date.now() - state.endedAt > RESTART_MS)) state = newGame(state);
-  if (state.status === 'over') scheduleRestart();
-  banner('👑 YOU ARE THE HOST — your browser runs the game', 4000);
+  state = (view && sanitize(JSON.parse(JSON.stringify(view.cur)))) || newWorld();
+  banner('👑 YOU ARE THE HOST — your browser runs the pack', 3500);
   loop();
 }
 
 function stepDown() {
   amHost = false;
-  clearTimeout(hostTimer); clearTimeout(restartTimer);
+  clearTimeout(hostTimer);
+}
+
+// Make the pack match who is online: one dog per player, plus a CPU dog when lonely.
+function syncPack() {
+  const now = Date.now();
+  const live = [...peers.values()].filter((p) => now - p.seen < 6000).sort((a, b) => a.joined - b.joined);
+  const ids = new Set(live.map((p) => p.id));
+  for (const d of [...state.dogs]) if (!d.bot && !ids.has(d.id)) removeDog(state, d.id);
+  for (const p of live) {
+    const d = state.dogs.find((x) => x.id === p.id) || addDog(state, { id: p.id, name: p.name, g: p.golden });
+    if (!d) continue;
+    d.name = p.name; d.g = p.golden;
+    if (!p.active) d.auto = true; // hidden tabs get an autopilot babysitter
+  }
+  const bot = state.dogs.find((d) => d.bot);
+  if (live.length < 2 && !bot) addDog(state, { id: BOT_ID, name: 'CPU-9000', bot: true });
+  if (live.length >= 2 && bot) removeDog(state, BOT_ID);
 }
 
 function loop() {
   clearTimeout(hostTimer);
   if (!amHost) return;
-  let ev = null, evBy = null;
-  if (state.status === 'playing') {
-    if (state.auto && !state.queue.length) {
-      const d = autopilot(state);
-      if (d !== state.dir) state.queue.push({ dir: d, name: null });
+  syncPack();
+  const events = tick(state);
+  let fameChanged = false;
+  for (const e of events) {
+    const d = state.dogs.find((x) => x.id === e.id);
+    if (e.t === 'die' && d && !d.bot && e.score > 0) {
+      const next = addToFame(fame, { name: d.name, c: d.c, score: e.score, at: Date.now() });
+      if (JSON.stringify(next) !== JSON.stringify(fame)) { fame = next; fameChanged = true; }
     }
-    evBy = state.queue[0]?.name ?? null;
-    ev = tick(state);
-    if (ev === 'die' || ev === 'win') onGameEnd();
   }
-  const { queue, ...wire } = state;
-  publish(T.state, { ...wire, from: me.id, ev, evBy }, { retain: true });
-  receive(sanitize(state), ev, evBy);
-  hostTimer = setTimeout(loop, state.status === 'playing' ? tickMs(state.score) : 1000);
-}
-
-function onGameEnd() {
-  state.endedAt = Date.now();
-  if (state.score > 0 && !state.auto) {
-    fame = addToFame(fame, { score: state.score, crew: state.crew.slice(0, 6), at: Date.now() });
-    publish(T.fame, { list: fame }, { retain: true });
-    renderFame();
-  }
-  scheduleRestart();
-}
-
-function scheduleRestart() {
-  clearTimeout(restartTimer);
-  restartTimer = setTimeout(() => { if (amHost) { state = newGame(state); banner(`GAME #${state.game} — GO GO GO`, 1500); } }, RESTART_MS);
+  if (fameChanged) { publish(T.fame, { list: fame }, { retain: true }); renderFame(); }
+  const out = wire(state);
+  publish(T.state, { ...out, from: me.id }, { retain: true });
+  receive(sanitize(JSON.parse(JSON.stringify(out))));
+  hostTimer = setTimeout(loop, TICK_MS);
 }
 
 // ---------- local input ----------
-const ARROWS = { up: '⬆️', down: '⬇️', left: '⬅️', right: '➡️' };
 function sendDir(dir) {
   audio.unlock();
-  publish(T.input, { id: me.id, name: me.name, dir });
-  if (amHost) steer(state, dir, me.name);
+  publish(T.input, { id: me.id, dir });
+  if (amHost) steer(state, me.id, dir);
   const b = document.querySelector(`.pad button[data-dir=${dir}]`);
   b?.classList.add('hit'); setTimeout(() => b?.classList.remove('hit'), 90);
 }
@@ -187,7 +190,7 @@ let lastEmote = 0;
 function sendEmote(e) {
   if (Date.now() - lastEmote < 350) return;
   lastEmote = Date.now();
-  publish(T.emote, { e, name: me.name });
+  publish(T.emote, { e, name: me.name, id: me.id });
 }
 
 const KONAMI = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
@@ -244,38 +247,65 @@ const audio = {
 
 // ---------- view model (interpolation, particles, fx) ----------
 const particles = [];
-let shakeT = 0, flashT = 0, lastBy = null;
-function receive(s, ev, evBy) {
+let shakeT = 0, flashT = 0, lastPanel = 0;
+const CAUSE = { wall: () => 'hit a wall', self: () => 'bit its own tail', dog: (by) => `crashed into ${by || 'a dog'}`, headbutt: (by) => `headbutted ${by || 'a dog'}` };
+const coatOf = (d) => COATS[d.c] || COATS[0];
+
+function burst([x, y], color, n = 22, power = 9) {
+  for (let i = 0; i < n; i++) particles.push({ x: x * CELL + CELL / 2, y: y * CELL + CELL / 2, vx: (Math.random() - 0.5) * power, vy: (Math.random() - 0.5) * power - 2, life: 1, c: Math.random() < 0.5 ? color : pick(['#ffe259', '#fff8e7']) });
+}
+
+function receive(s) {
   if (!s) return;
-  const now = performance.now();
-  const sameGame = view && view.cur.game === s.game;
-  if (sameGame && s.seq <= view.cur.seq && s.status === view.cur.status) return;
-  const prev = sameGame && s.seq === view.cur.seq + 1 ? view.cur.snake : s.snake;
-  view = { prev, cur: s, at: now, dur: tickMs(s.score) };
-  state = amHost ? state : s;
-  if (!sameGame && s.status === 'playing' && view) banner(`GAME #${s.game} — INSERT COIN 🪙`, 1600);
-  if (ev === 'eat') {
-    audio.eat();
-    const [x, y] = s.snake[0];
-    for (let i = 0; i < 26; i++) particles.push({ x: x * CELL + CELL / 2, y: y * CELL + CELL / 2, vx: (Math.random() - 0.5) * 9, vy: (Math.random() - 0.5) * 9 - 2, life: 1, c: pick(['#ffe259', '#fff8e7', '#ff2bd6', '#00f0ff']) });
-    particles.push({ x: x * CELL + CELL / 2, y: y * CELL, vx: 0, vy: -1.2, life: 1.6, text: evBy ? `+1 ${evBy}` : '+1' });
+  const sameWorld = view && view.cur.w === s.w;
+  if (sameWorld && s.seq <= view.cur.seq) return;
+  const prev = new Map();
+  if (sameWorld && s.seq === view.cur.seq + 1) for (const d of view.cur.dogs) if (d.alive) prev.set(d.id, d.snake);
+  const before = new Map((view?.cur.dogs || []).map((d) => [d.id, d]));
+  const firstView = !view;
+  view = { prev, cur: s, at: performance.now() };
+  if (!amHost) state = s;
+
+  if (!firstView) {
+    for (const d of s.dogs) if (!before.has(d.id)) feedRow(coatOf(d), `${d.name} joined the pack`, d.bot ? '🤖' : '🐶', d.id === me.id);
+    for (const [id, d] of before) if (!s.dogs.some((x) => x.id === id)) feedRow(coatOf(d), `${d.name} left`, '👋');
   }
-  if (ev === 'die' || ev === 'win') {
-    ev === 'die' ? audio.die() : audio.win();
-    shakeT = 1; flashT = 1;
-    ui.stage.classList.remove('shake'); void ui.stage.offsetWidth; ui.stage.classList.add('shake');
-    lastBy = s.death?.by;
+  for (const e of s.events) {
+    const d = s.dogs.find((x) => x.id === e.id);
+    if (!d) continue;
+    const mine = d.id === me.id;
+    if (e.t === 'eat' && e.at) {
+      burst(e.at, coatOf(d), mine ? 26 : 12, mine ? 9 : 6);
+      if (mine) { audio.eat(); particles.push({ x: e.at[0] * CELL + CELL / 2, y: e.at[1] * CELL, vx: 0, vy: -1.2, life: 1.6, text: '+1' }); }
+    }
+    if (e.t === 'die') {
+      if (e.at) burst(e.at, coatOf(d), 40, 12);
+      feedRow(coatOf(d), `${d.name} ${(CAUSE[e.cause] || CAUSE.wall)(e.by)}${e.score ? ` · ${e.score} 🦴` : ''}`, '💀', mine);
+      if (mine) {
+        audio.die(); shakeT = 1; flashT = 1;
+        ui.stage.classList.remove('shake'); void ui.stage.offsetWidth; ui.stage.classList.add('shake');
+      } else if (e.by === me.name) { audio.beep([880, 1320], 0.07); banner(`💥 YOU TOOK OUT ${d.name.toUpperCase()}`, 1600); }
+    }
+    if (e.t === 'spawn' && mine && !firstView && before.has(me.id)) banner('🐶 BACK IN THE PACK', 1200);
   }
-  hiLocal = Math.max(hiLocal, s.score, fame[0]?.score || 0);
-  ui.game.textContent = `#${s.game}`;
-  ui.score.textContent = String(s.score).padStart(3, '0');
+  const mineNow = s.dogs.find((d) => d.id === me.id);
+  const ranked = [...s.dogs].sort((a, b) => b.score - a.score);
+  hiLocal = Math.max(hiLocal, mineNow?.score || 0, fame[0]?.score || 0);
+  ui.pack.textContent = s.dogs.length;
+  ui.score.textContent = String(mineNow?.score || 0).padStart(3, '0');
   ui.hi.textContent = String(hiLocal).padStart(3, '0');
-  ui.speed.textContent = `${(210 / tickMs(s.score)).toFixed(1)}x`;
+  ui.rank.textContent = mineNow ? `#${ranked.indexOf(mineNow) + 1}` : '–';
+  if (s.events.length || s.seq - lastPanel >= 4 || s.seq < lastPanel) { lastPanel = s.seq; renderPlayers(); }
 }
 
 // ---------- rendering ----------
 const lerp = (a, b, t) => a + (b - a) * t;
 const ease = (t) => t * t * (3 - 2 * t);
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (c) => Math.round(amt < 0 ? c * (1 + amt) : c + (255 - c) * amt);
+  return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
+}
 
 function drawBoard(t) {
   ctx.fillStyle = '#0b0418';
@@ -288,79 +318,90 @@ function drawBoard(t) {
   for (let x = 0; x <= COLS; x++) { ctx.moveTo(x * CELL + 0.5, 0); ctx.lineTo(x * CELL + 0.5, ROWS * CELL); }
   for (let y = 0; y <= ROWS; y++) { ctx.moveTo(0, y * CELL + 0.5); ctx.lineTo(COLS * CELL, y * CELL + 0.5); }
   ctx.stroke();
-  // sweeping radar line for extra drama
   const sx = ((t / 4000) % 1) * canvas.width;
   const g = ctx.createLinearGradient(sx - 120, 0, sx, 0);
   g.addColorStop(0, 'rgba(0,240,255,0)'); g.addColorStop(1, 'rgba(0,240,255,0.08)');
   ctx.fillStyle = g; ctx.fillRect(sx - 120, 0, 120, canvas.height);
 }
 
-function drawBone([x, y], t) {
-  const cx = x * CELL + CELL / 2, cy = y * CELL + CELL / 2 + Math.sin(t / 220) * 3;
-  const pulse = (t / 1400) % 1;
-  ctx.beginPath(); ctx.arc(cx, cy, 10 + pulse * 18, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(255,226,89,${0.6 * (1 - pulse)})`; ctx.lineWidth = 3; ctx.stroke();
-  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-0.5 + Math.sin(t / 400) * 0.15);
-  ctx.shadowColor = '#ffe259'; ctx.shadowBlur = 18; ctx.fillStyle = '#fff8e7';
+function drawBone([x, y], t, i) {
+  const cx = x * CELL + CELL / 2, cy = y * CELL + CELL / 2 + Math.sin(t / 220 + i) * 2.5;
+  const pulse = (t / 1400 + i * 0.37) % 1;
+  ctx.beginPath(); ctx.arc(cx, cy, 8 + pulse * 14, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(255,226,89,${0.5 * (1 - pulse)})`; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-0.5 + Math.sin(t / 400 + i) * 0.15); ctx.scale(S, S);
+  ctx.shadowColor = '#ffe259'; ctx.shadowBlur = 16; ctx.fillStyle = '#fff8e7';
   ctx.fillRect(-10, -4, 20, 8);
   for (const [bx, by] of [[-11, -4.5], [-11, 4.5], [11, -4.5], [11, 4.5]]) { ctx.beginPath(); ctx.arc(bx, by, 5.2, 0, Math.PI * 2); ctx.fill(); }
   ctx.restore();
 }
 
-function dogPoints(t) {
-  const k = Math.min(1, (t - view.at) / view.dur);
-  const e = view.cur.status === 'playing' ? ease(k) : 1;
-  const { prev, cur } = view;
-  return cur.snake.map((p, i) => {
+function dogPoints(dog, t) {
+  const k = Math.min(1, (t - view.at) / TICK_MS);
+  const e = dog.alive ? ease(k) : 1;
+  const prev = view.prev.get(dog.id) || dog.snake;
+  return dog.snake.map((p, i) => {
     const q = prev[i] ?? prev[prev.length - 1] ?? p;
     return [lerp(q[0], p[0], e) * CELL + CELL / 2, lerp(q[1], p[1], e) * CELL + CELL / 2];
   });
 }
 
-function drawDog(pts, t, dead) {
-  const body = golden ? (() => { const g = ctx.createLinearGradient(0, 0, canvas.width, canvas.height); ['#ff2a6d', '#ffe259', '#5dff9e', '#00f0ff', '#ff2bd6'].forEach((c, i) => g.addColorStop(i / 4, c)); return g; })() : '#b5651d';
+function drawDog(dog, pts, t) {
+  const n = pts.length;
+  if (n < 2) return;
+  const dead = !dog.alive, mine = dog.id === me.id, coat = coatOf(dog);
+  const dark = shade(coat, -0.55), headC = shade(coat, 0.12), snout = shade(coat, 0.3);
+  const body = dog.g ? (() => { const g = ctx.createLinearGradient(0, 0, canvas.width, canvas.height); ['#ff2a6d', '#ffe259', '#5dff9e', '#00f0ff', '#ff2bd6'].forEach((c, i) => g.addColorStop(i / 4, c)); return g; })() : coat;
+  ctx.save();
+  if (dead) ctx.globalAlpha = Math.max(0, (dog.respawn - (RESPAWN_TICKS - 10)) / 10) * 0.6;
+  // "you are here" ring
+  if (mine && !dead) {
+    const r = 26 + Math.sin(t / 160) * 4;
+    ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], r, 0, Math.PI * 2);
+    ctx.strokeStyle = coat; ctx.globalAlpha = 0.45; ctx.lineWidth = 2; ctx.setLineDash([5, 6]); ctx.lineDashOffset = -t / 30; ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+  }
   // tail
-  const n = pts.length, [tx, ty] = pts[n - 1], [px, py] = pts[n - 2];
-  const ta = Math.atan2(ty - py, tx - px), wag = Math.sin(t / 70) * 0.6;
-  ctx.save(); ctx.translate(tx, ty); ctx.rotate(ta + wag);
-  ctx.strokeStyle = '#8a4a14'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  const [tx, ty] = pts[n - 1], [px, py] = pts[n - 2];
+  const ta = Math.atan2(ty - py, tx - px), wag = dead ? 0 : Math.sin(t / 70) * 0.6;
+  ctx.save(); ctx.translate(tx, ty); ctx.rotate(ta + wag); ctx.scale(S, S);
+  ctx.strokeStyle = dark; ctx.lineWidth = 6; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(6, 0); ctx.quadraticCurveTo(20, -4, 26, -14); ctx.stroke(); ctx.restore();
-  // paws: little trotting legs on front & back segments
+  // paws
   const legs = [1, n - 2].filter((i, j, a) => i > 0 && a.indexOf(i) === j);
   legs.forEach((i, j) => {
     const [x, y] = pts[i], [nx, ny] = pts[i - 1];
-    const a = Math.atan2(ny - y, nx - x), step = dead ? 0 : Math.sin(t / 60 + j * Math.PI) * 5;
+    const a = Math.atan2(ny - y, nx - x), step = dead ? 0 : Math.sin(t / 60 + j * Math.PI) * 4;
     for (const side of [1, -1]) {
-      ctx.fillStyle = '#5c2e0e';
-      ctx.beginPath();
-      ctx.ellipse(x - Math.sin(a) * 17 * side + Math.cos(a) * step * side, y + Math.cos(a) * 17 * side + Math.sin(a) * step * side, 6, 5, a, 0, Math.PI * 2);
+      ctx.fillStyle = dark; ctx.beginPath();
+      ctx.ellipse(x - Math.sin(a) * 14 * side + Math.cos(a) * step * side, y + Math.cos(a) * 14 * side + Math.sin(a) * step * side, 5, 4, a, 0, Math.PI * 2);
       ctx.fill();
     }
   });
   // body
   const path = () => { ctx.beginPath(); ctx.moveTo(...pts[0]); for (let i = 1; i < n; i++) ctx.lineTo(...pts[i]); };
   ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  ctx.shadowColor = golden ? '#ffe259' : 'rgba(0,0,0,0.7)'; ctx.shadowBlur = golden ? 24 : 10; ctx.shadowOffsetY = golden ? 0 : 4;
-  path(); ctx.strokeStyle = '#5c2e0e'; ctx.lineWidth = 32; ctx.stroke();
+  ctx.shadowColor = dog.g ? '#ffe259' : coat; ctx.shadowBlur = mine ? 22 : 12;
+  path(); ctx.strokeStyle = dark; ctx.lineWidth = 26; ctx.stroke();
   ctx.shadowColor = 'transparent';
-  path(); ctx.strokeStyle = body; ctx.lineWidth = 27; ctx.stroke();
-  ctx.save(); ctx.translate(-2, -4); path(); ctx.strokeStyle = 'rgba(255,200,140,0.35)'; ctx.lineWidth = 8; ctx.stroke(); ctx.restore();
+  path(); ctx.strokeStyle = body; ctx.lineWidth = 21; ctx.stroke();
+  ctx.save(); ctx.translate(-1.5, -3); path(); ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 6; ctx.stroke(); ctx.restore();
   // collar
   const [hx, hy] = pts[0], [nx, ny] = pts[1];
   const ha = Math.atan2(hy - ny, hx - nx);
-  ctx.save(); ctx.translate(lerp(hx, nx, 0.42), lerp(hy, ny, 0.42)); ctx.rotate(ha);
-  ctx.fillStyle = '#00f0ff'; ctx.shadowColor = '#00f0ff'; ctx.shadowBlur = 12; ctx.fillRect(-3, -15, 6, 30);
+  ctx.save(); ctx.translate(lerp(hx, nx, 0.42), lerp(hy, ny, 0.42)); ctx.rotate(ha); ctx.scale(S, S);
+  ctx.fillStyle = mine ? '#ffe259' : '#00f0ff'; ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 12; ctx.fillRect(-3, -15, 6, 30);
   ctx.fillStyle = '#ffe259'; ctx.beginPath(); ctx.arc(2, 15, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   // head (drawn facing +x)
-  ctx.save(); ctx.translate(hx, hy); ctx.rotate(ha);
-  const flop = dead ? 0.6 : Math.sin(t / 110) * 0.35;
-  ctx.fillStyle = '#5c2e0e';
+  ctx.save(); ctx.translate(hx, hy); ctx.rotate(ha); ctx.scale(S, S);
+  const flop = dead ? 0.6 : Math.sin(t / 110 + dog.c) * 0.35;
+  ctx.fillStyle = dark;
   for (const s of [1, -1]) {
     ctx.save(); ctx.translate(-6, 10 * s); ctx.rotate((0.5 + flop) * s);
     ctx.beginPath(); ctx.ellipse(-6, 5 * s, 12, 7, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
-  ctx.fillStyle = golden ? '#ffd23f' : '#c97a2e'; ctx.beginPath(); ctx.ellipse(2, 0, 18, 15, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = golden ? '#ffe98a' : '#d98c3f'; ctx.beginPath(); ctx.ellipse(15, 1, 11, 8.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = dog.g ? '#ffd23f' : headC; ctx.beginPath(); ctx.ellipse(2, 0, 18, 15, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = dog.g ? '#ffe98a' : snout; ctx.beginPath(); ctx.ellipse(15, 1, 11, 8.5, 0, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#111'; ctx.beginPath(); ctx.ellipse(25, 0, 4.5, 4, 0, 0, Math.PI * 2); ctx.fill();
   if (dead) {
     ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5;
@@ -375,7 +416,16 @@ function drawDog(pts, t, dead) {
   ctx.fillStyle = '#ff4f8b';
   const tongue = dead ? 12 : 7 + Math.sin(t / 90) * 3;
   ctx.beginPath(); ctx.ellipse(21, 8, 4, tongue / 2, 0.3, 0, Math.PI * 2); ctx.fill();
-  if (golden) { ctx.font = '18px serif'; ctx.fillText('👑', -10, -14); }
+  ctx.restore();
+  // name tag
+  if (!dead) {
+    const label = `${dog.g ? '👑 ' : ''}${dog.bot || dog.auto ? '🤖 ' : ''}${mine ? 'YOU' : dog.name}`;
+    ctx.font = `700 ${mine ? 13 : 11}px ui-monospace, Menlo, monospace`; ctx.textAlign = 'center';
+    const w = ctx.measureText(label).width + 12, bob = mine ? Math.abs(Math.sin(t / 200)) * 4 : 0, ly = hy < 44 ? hy + 36 + bob : hy - 30 - bob;
+    ctx.fillStyle = 'rgba(5,1,15,0.75)'; ctx.strokeStyle = coat; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.roundRect(hx - w / 2, ly - 12, w, 17, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = mine ? '#ffe259' : coat; ctx.fillText(label, hx, ly + 1);
+  }
   ctx.restore();
 }
 
@@ -393,37 +443,45 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
-function drawOverlay(t) {
-  const s = view.cur;
-  if (s.status !== 'over') return;
-  ctx.fillStyle = 'rgba(5,1,15,0.72)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.textAlign = 'center';
-  const sc = 1 + Math.sin(t / 200) * 0.04;
-  ctx.save(); ctx.translate(canvas.width / 2, canvas.height / 2 - 30); ctx.scale(sc, sc);
-  ctx.font = '900 96px Impact, "Arial Black", sans-serif';
-  ctx.fillStyle = '#00f0ff'; ctx.fillText(s.death?.cause === 'win' ? 'YOU WIN' : 'GAME OVER', -4, 0);
-  ctx.fillStyle = '#ff2bd6'; ctx.fillText(s.death?.cause === 'win' ? 'YOU WIN' : 'GAME OVER', 4, 0);
-  ctx.fillStyle = '#fff'; ctx.shadowColor = '#ff2a6d'; ctx.shadowBlur = 30; ctx.fillText(s.death?.cause === 'win' ? 'YOU WIN' : 'GAME OVER', 0, 0);
+function bigText(text, y, size) {
+  ctx.save(); ctx.translate(canvas.width / 2, y);
+  const sc = 1 + Math.sin(performance.now() / 200) * 0.04; ctx.scale(sc, sc);
+  ctx.font = `900 ${size}px Impact, "Arial Black", sans-serif`; ctx.textAlign = 'center';
+  ctx.fillStyle = '#00f0ff'; ctx.fillText(text, -4, 0);
+  ctx.fillStyle = '#ff2bd6'; ctx.fillText(text, 4, 0);
+  ctx.fillStyle = '#fff'; ctx.shadowColor = '#ff2a6d'; ctx.shadowBlur = 30; ctx.fillText(text, 0, 0);
   ctx.restore();
-  ctx.font = '700 20px ui-monospace, Menlo, monospace'; ctx.fillStyle = '#e6f7ff'; ctx.shadowBlur = 0;
-  const by = s.death?.by || lastBy;
-  const why = s.death?.cause === 'wall' ? 'hit a wall' : s.death?.cause === 'self' ? 'bit its own tail' : 'ate EVERYTHING';
-  ctx.fillText(`${by ? `${by} steered the doggo into` : 'the doggo'} ${by ? (s.death?.cause === 'wall' ? 'a wall' : 'its own tail') : why}`, canvas.width / 2, canvas.height / 2 + 30);
-  ctx.fillStyle = '#ffe259'; ctx.fillText(`FINAL SCORE ${s.score} 🦴`, canvas.width / 2, canvas.height / 2 + 62);
-  const left = Math.max(0, Math.ceil((RESTART_MS - (Date.now() - (s.endedAt || Date.now()))) / 1000));
-  if (Math.floor(t / 500) % 2) { ctx.fillStyle = '#00f0ff'; ctx.fillText(`CONTINUE? ${left}…`, canvas.width / 2, canvas.height / 2 + 110); }
 }
 
-function drawAttract(t) {
-  ctx.save();
-  ctx.textAlign = 'center'; ctx.font = 'bold 22px "Press Start 2P", ui-monospace, monospace';
-  ctx.fillStyle = 'rgba(0,240,255,0.85)'; ctx.shadowColor = '#00f0ff'; ctx.shadowBlur = 14;
-  ctx.fillText('🤖 AUTOPILOT', canvas.width / 2, 44);
-  if (Math.floor(t / 600) % 2) {
-    ctx.font = 'bold 15px ui-monospace, monospace'; ctx.fillStyle = '#ffe259'; ctx.shadowColor = '#ff2bd6';
-    ctx.fillText('PRESS ANY ARROW TO TAKE THE LEASH', canvas.width / 2, 72);
+function drawOverlay(t) {
+  const d = myDog();
+  ctx.textAlign = 'center';
+  if (!d) {
+    ctx.font = '700 18px ui-monospace, Menlo, monospace'; ctx.fillStyle = '#00f0ff';
+    ctx.fillText('JOINING THE PACK' + '.'.repeat(Math.floor(t / 300) % 4), canvas.width / 2, 40);
+    return;
   }
-  ctx.restore();
+  if (!d.alive) {
+    ctx.fillStyle = 'rgba(5,1,15,0.45)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    bigText('BONKED!', canvas.height / 2 - 20, 88);
+    ctx.font = '700 20px ui-monospace, Menlo, monospace'; ctx.fillStyle = '#e6f7ff';
+    ctx.fillText(`your doggo ${(CAUSE[d.death?.cause] || CAUSE.wall)(d.death?.by)}`, canvas.width / 2, canvas.height / 2 + 30);
+    ctx.fillStyle = '#ffe259';
+    const secs = Math.max(0, (d.respawn * TICK_MS - (t - view.at)) / 1000);
+    ctx.fillText(`RESPAWN IN ${secs.toFixed(1)}`, canvas.width / 2, canvas.height / 2 + 64);
+    return;
+  }
+  if (d.auto) {
+    ctx.save();
+    ctx.font = 'bold 20px ui-monospace, Menlo, monospace';
+    ctx.fillStyle = 'rgba(0,240,255,0.85)'; ctx.shadowColor = '#00f0ff'; ctx.shadowBlur = 14;
+    ctx.fillText('🤖 YOUR DOG IS ON AUTOPILOT', canvas.width / 2, 40);
+    if (Math.floor(t / 600) % 2) {
+      ctx.font = 'bold 14px ui-monospace, monospace'; ctx.fillStyle = '#ffe259'; ctx.shadowColor = '#ff2bd6';
+      ctx.fillText('PRESS ANY ARROW TO TAKE THE LEASH', canvas.width / 2, 64);
+    }
+    ctx.restore();
+  }
 }
 
 function drawWaiting(t) {
@@ -438,12 +496,12 @@ function frame(t) {
     ctx.save();
     if (shakeT > 0) { ctx.translate((Math.random() - 0.5) * 16 * shakeT, (Math.random() - 0.5) * 16 * shakeT); shakeT = Math.max(0, shakeT - 0.04); }
     drawBoard(t);
-    if (view.cur.food) drawBone(view.cur.food, t);
-    drawDog(dogPoints(t), t, view.cur.status === 'over');
+    view.cur.food.forEach((f, i) => drawBone(f, t, i));
+    const dogs = [...view.cur.dogs].sort((a, b) => (a.alive - b.alive) || ((a.id === me.id) - (b.id === me.id)));
+    for (const d of dogs) drawDog(d, dogPoints(d, t), t);
     drawParticles();
     ctx.restore();
     if (flashT > 0) { ctx.fillStyle = `rgba(255,42,109,${flashT * 0.5})`; ctx.fillRect(0, 0, canvas.width, canvas.height); flashT = Math.max(0, flashT - 0.05); }
-    if (view.cur.auto && view.cur.status === 'playing') drawAttract(t);
     drawOverlay(t);
   }
   requestAnimationFrame(frame);
@@ -451,24 +509,32 @@ function frame(t) {
 
 // ---------- side panels ----------
 function renderPlayers() {
-  const list = [...peers.values()].sort((a, b) => a.joined - b.joined);
-  ui.online.textContent = list.length;
-  document.getElementById('humans').textContent = list.length === 1 ? 'HUMAN' : 'HUMANS';
-  ui.players.replaceChildren(...list.map((p) => li([`${p.id === hostId ? '👑 ' : ''}${p.golden ? '🌟 ' : ''}${p.name}${p.id === me.id ? ' (you)' : ''}`, p.active ? '' : '💤'], p.id === me.id ? 'me' : '')));
+  const dogs = [...(view?.cur.dogs || [])].sort((a, b) => b.score - a.score);
+  const humans = [...peers.values()].length;
+  ui.online.textContent = dogs.length || humans;
+  $('dogsWord').textContent = (dogs.length || humans) === 1 ? 'DOG' : 'DOGS';
+  const rows = dogs.map((d) => swatchRow(coatOf(d), ` ${d.id === hostId ? '👑 ' : ''}${d.g ? '🌟 ' : ''}${d.bot ? '🤖 ' : ''}${d.name}${d.id === me.id ? ' (you)' : ''}`, d.alive ? `${d.score} 🦴` : '💀', d.id === me.id ? 'me' : ''));
+  ui.players.replaceChildren(...(rows.length ? rows : [li('scanning…', 'dim')]));
 }
 function renderFame() {
   hiLocal = Math.max(hiLocal, fame[0]?.score || 0);
   ui.hi.textContent = String(hiLocal).padStart(3, '0');
-  ui.fame.replaceChildren(...(fame.length ? fame.map((e, i) => li([`${['🥇', '🥈', '🥉'][i] || `${i + 1}.`} ${e.crew.join(', ') || '???'}`, `${e.score} 🦴`])) : [li('no legends yet', 'dim')]));
+  ui.fame.replaceChildren(...(fame.length ? fame.map((e, i) => swatchRow(COATS[e.c] || COATS[0], ` ${['🥇', '🥈', '🥉'][i] || `${i + 1}.`} ${e.name}`, `${e.score} 🦴`)) : [li('no legends yet', 'dim')]));
 }
-function feed(text, mine) {
+function feedRow(coat, text, icon, mine) {
   if (ui.feed.firstChild?.classList?.contains('dim')) ui.feed.replaceChildren();
-  ui.feed.prepend(li(text, mine ? 'me' : ''));
+  ui.feed.prepend(swatchRow(coat, ` ${icon} ${text}`, '', mine ? 'me' : ''));
   while (ui.feed.children.length > 8) ui.feed.lastChild.remove();
 }
-function floatEmote(e, name) {
+function floatEmote(e, name, id) {
   const el = document.createElement('div');
-  el.className = 'emote'; el.style.left = `${5 + Math.random() * 85}%`;
+  el.className = 'emote';
+  const dog = view?.cur.dogs.find((d) => d.id === id && d.alive);
+  if (dog) {
+    el.style.left = `${((dog.snake[0][0] + 0.5) / COLS) * 100}%`;
+    el.style.top = `${(dog.snake[0][1] / ROWS) * 100}%`;
+    el.style.bottom = 'auto'; el.style.marginLeft = '-17px'; el.style.marginTop = '-40px';
+  } else el.style.left = `${5 + Math.random() * 85}%`;
   el.textContent = e;
   const s = document.createElement('small'); s.textContent = name; el.append(s);
   ui.emotes.append(el); setTimeout(() => el.remove(), 2700);
@@ -486,9 +552,9 @@ setInterval(heartbeat, HEARTBEAT_MS);
 setInterval(elect, 700);
 connect();
 banner('CONNECTING TO THE GRID…');
-setTimeout(() => connected && banner(`WELCOME, ${me.name.toUpperCase()} — STEER WITH ←↑↓→`, 3500), SETTLE_MS);
+setTimeout(() => connected && banner(`WELCOME, ${me.name.toUpperCase()} — STEER YOUR DOG WITH ←↑↓→`, 3500), SETTLE_MS);
 requestAnimationFrame(frame);
 canvas.focus();
 
 // test hook
-window.__dsnake = { me, peers, get amHost() { return amHost; }, get hostId() { return hostId; }, get view() { return view; }, sendDir };
+window.__dsnake = { me, peers, get amHost() { return amHost; }, get hostId() { return hostId; }, get view() { return view; }, myDog, sendDir };
